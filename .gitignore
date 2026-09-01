@@ -2,6 +2,9 @@
 venv/
 .venv/
 
+# Locally downloaded model weights
+bigc-agent/models/
+
 # Python-generated files
 __pycache__/
 *.py[cod]
