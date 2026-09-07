@@ -4,6 +4,7 @@ from pathlib import Path
 def load_docs(data_dir: str = "data/docs") -> list[dict]:
     """读取目录下所有 .txt 文档，返回 [{"source": 文件名, "text": 全文}]。"""
     docs = []
+    print(f"[INFO] 开始加载 {data_dir} 下的所有 .txt 文档")
     for path in sorted(Path(data_dir).glob("*.txt")):
         text = path.read_text(encoding="utf-8")
         # 简单清洗：折叠连续空行、去掉首尾空白

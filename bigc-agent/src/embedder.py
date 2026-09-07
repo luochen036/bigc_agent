@@ -40,6 +40,7 @@ def main() -> None:
         ],
         normalize_embeddings=True,
     )
+    print(v1)
     print("印刷 vs 特色专业:", round(cosine(v1, v2), 3))
     print("印刷 vs 天气     :", round(cosine(v1, v3), 3))
     print("印刷 vs 超人     :", round(cosine(v1, v4), 3))
