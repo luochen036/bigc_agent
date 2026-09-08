@@ -4,6 +4,7 @@ venv/
 
 # Locally downloaded model weights
 bigc-agent/models/
+bigc-agent/storage/chroma/
 
 # Python-generated files
 __pycache__/

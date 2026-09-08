@@ -1,10 +1,11 @@
-from functools import lru_cache
+"""嵌入模型：把文字转为向量，供数据库比较含义是否相近。"""
+
 from pathlib import Path
 
-import numpy as np
 from sentence_transformers import SentenceTransformer
 
 MODEL_NAME = "BAAI/bge-small-zh-v1.5"
+# 这是本项目已经下载好的模型目录。若没有本地文件，库会尝试在线下载。
 LOCAL_MODEL_DIR = (
     Path(__file__).resolve().parents[1]
     / "models"
@@ -14,36 +15,23 @@ LOCAL_MODEL_DIR = (
 )
 
 
-@lru_cache(maxsize=1)
 def load_model() -> SentenceTransformer:
-    """Load the local model snapshot when available, otherwise use Hugging Face."""
-    model_source = str(LOCAL_MODEL_DIR) if LOCAL_MODEL_DIR.is_dir() else MODEL_NAME
+    """返回一个模型对象，之后用 model.encode([文本1, 文本2]) 得到向量。"""
+    if LOCAL_MODEL_DIR.is_dir():
+        model_source = str(LOCAL_MODEL_DIR)
+    else:
+        model_source = MODEL_NAME
+
+    # 建索引和检索问题必须使用同一个嵌入模型，向量才处在同一个比较空间。
     return SentenceTransformer(model_source)
 
 
-def cosine(a: np.ndarray, b: np.ndarray) -> float:
-    denominator = np.linalg.norm(a) * np.linalg.norm(b)
-    if denominator == 0:
-        raise ValueError("Cosine similarity is undefined for zero vectors")
-    return float(np.dot(a, b) / denominator)
-
-
-def main() -> None:
+def main():
+    # 测试模型是否加载成功。
     model = load_model()
-
-    v1, v2, v3, v4 = model.encode(
-        [
-            "印刷工程专业怎么样？",
-            "学校有哪些特色专业？",
-            "今天天气不错。",
-            "超人",
-        ],
-        normalize_embeddings=True,
-    )
-    print(v1)
-    print("印刷 vs 特色专业:", round(cosine(v1, v2), 3))
-    print("印刷 vs 天气     :", round(cosine(v1, v3), 3))
-    print("印刷 vs 超人     :", round(cosine(v1, v4), 3))
+    vectors = model.encode(["学校有哪些特色专业？"], normalize_embeddings=True)
+    print("向量形状（文本数量，向量维度）：", vectors.shape)
+    print("第一个向量的前 5 个数字：", vectors[0][:5])
 
 
 if __name__ == "__main__":
