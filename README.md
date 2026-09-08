@@ -1,230 +1,200 @@
-# 北京印刷学院文档问答：入门教学版
+# 北京印刷学院智能问答助手
 
-这个项目演示最基础的 RAG（检索增强生成）：先找资料，再让大模型根据资料回答。
-目标是看懂一条完整的数据处理流程。当前只提供命令行单次问答，没有网页、对话记忆或工具调用。
+基于 RAG（检索增强生成）的校园文档问答项目，使用本地嵌入模型和 Chroma 检索资料，再通过兼容 OpenAI 格式的聊天接口生成带来源编号的回答。
 
-## 一、先运行起来
+项目面向 AI 应用开发学习与实践，包含从文档处理、向量入库到检索问答的完整流程。目前提供命令行单次问答，知识库包含招生简章、特色专业和校园生活等文本资料。
 
-你已经配置好的 `bigc-agent/.env` 会继续使用，不需要重新填写。
+## 功能概览
 
-如果终端已经激活虚拟环境，并且当前目录是 `bigc-agent/src`，只需执行：
+- **文档处理**：读取 UTF-8 编码的 `.txt` 文件，清理空行并按句子切块。
+- **本地向量检索**：使用 `BAAI/bge-small-zh-v1.5` 生成向量，通过 Chroma 持久化存储并执行余弦相似度检索。
+- **基于资料回答**：将检索内容和问题组合成提示词，要求聊天模型按资料回答并标注来源编号。
+- **来源展示**：输出本次检索的文件名及相似度，便于回查原文。
+- **无命中处理**：没有资料通过相似度阈值时，直接返回“现有资料中没有相关信息”，跳过聊天接口调用。
+- **索引更新**：重新入库时更新当前文档并清理多余旧块；无可用文本块时保留原索引。
 
-```powershell
-python build_index.py
-python agent.py
-```
+## 技术栈
 
-第二条命令会显示“请输入问题：”，输入“北京印刷学院的校训是什么？”并回车。
-程序回答一次后结束，想问下一个问题就再次运行 `python agent.py`。
-
-第一条命令是准备资料，只在首次使用或文档改变后运行；不是每次提问前都要运行。
-
-如果从仓库根目录开始，PowerShell 中的完整步骤是：
-
-```powershell
-.\venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
-cd bigc-agent\src
-python build_index.py
-python agent.py
-```
-
-CMD 的虚拟环境激活命令是 `venv\Scripts\activate.bat`。
-若根目录还没有 venv，先用 `python -m venv venv` 创建。使用 Python 3.10 或更新版本，
-具体依赖是否支持你的 Python 版本，以安装结果为准。
-
-## 二、先分清两种模型
-
-| 模型 | 输入 | 输出 | 在哪里运行 |
-| --- | --- | --- | --- |
-| 嵌入模型 | 一段文档或一个问题 | 一组数字，即向量 | 本地电脑 |
-| 聊天模型 | 系统规则、参考资料、问题 | 自然语言回答 | .env 配置的服务 |
-
-向量可以帮助比较文字含义。例如“学校有哪些专业”和“介绍一下学校专业设置”，
-字面不同，但含义接近，模型生成的向量通常也比较接近。
-
-本项目使用现成的模型，不训练模型。把文档写入 Chroma 是建立检索索引，
-不等于把文档知识训练进聊天模型。
-
-## 三、先看整体流程
-
-准备资料时：
-
-```text
-.txt 文档
-  → 读取并清理文本
-  → 切成多个文本块
-  → 本地嵌入模型生成向量
-  → Chroma 保存原文、来源、向量
-```
-
-回答问题时：
-
-```text
-用户输入问题
-  → 同一个嵌入模型生成问题向量
-  → Chroma 找出相似文本块
-  → 将文本块和问题组成提示词
-  → 聊天模型生成回答
-  → 显示回答和参考来源
-```
-
-没有文本块通过相似度阈值时，程序直接回复“现有资料中没有相关信息”，不调用聊天模型。
-
-## 四、按顺序阅读代码
-
-代码中已有中文模块说明、函数说明和关键语句注释。建议按以下顺序阅读，
-每一步先关注“输入是什么、输出是什么”，再看具体语法。
-
-### 1. data_loader.py：把文件读进 Python
-
-文件位置：[data_loader.py](bigc-agent/src/data_loader.py)。
-
-输入是 `data/docs/` 目录中的 UTF-8 编码 `.txt` 文件，只读取直接子文件。
-输出是一个列表，列表里每个字典代表一篇文档：
-
-```python
-[
-    {"source": "校园生活.txt", "text": "清理后的全文"},
-    {"source": "特色专业.txt", "text": "清理后的全文"},
-]
-```
-
-列表保存多篇文档，字典保存一篇文档的不同属性。
-`doc["text"]` 取正文，`doc["source"]` 取文件名。
-
-路径从代码文件的位置计算，因此在 `src` 或项目根目录启动都能找到同一份资料。
-可以在 `src` 中单独运行 `python data_loader.py`，先观察加载结果。
-
-### 2. splitter.py：把长文切小
-
-文件位置：[splitter.py](bigc-agent/src/splitter.py)。
-
-输入是一篇完整文章，输出是 `["文本块1", "文本块2", ...]`。
-每块目标约 300 字，相邻块保留约 50 字重复内容，帮助保留边界上下文。
-按句子合并时，遇到很长的句子可能超过 300 字，这不是严格长度上限。
-
-这样检索可以定位到具体段落，也避免把全部文档都发送给聊天模型。
-单独运行 `python splitter.py` 可以查看小样例。
-
-### 3. embedder.py：把文字变为向量
-
-文件位置：[embedder.py](bigc-agent/src/embedder.py)。
-
-`load_model()` 加载本地的 `BAAI/bge-small-zh-v1.5` 模型，返回模型对象。
-本地模型目录不存在时，库会尝试联网下载。
-
-```python
-model = load_model()
-vectors = model.encode(["文本块1", "文本块2"], normalize_embeddings=True)
-```
-
-一段文本对应一个向量；两段文本就得到两个向量。
-`normalize_embeddings=True` 将向量长度统一为 1，便于比较方向相似度。
-文档和问题必须使用同一个嵌入模型，向量才有可比性。
-
-单独运行 `python embedder.py` 会显示一个问题的向量形状和前几个数字。
-
-### 4. store.py：将资料存到数据库
-
-文件位置：[store.py](bigc-agent/src/store.py)。
-
-Chroma 集合可以先理解为一张表，每条记录是一个文本块：
-
-| 字段 | 保存什么 | 为什么需要 |
+| 组件 | 技术 | 用途 |
 | --- | --- | --- |
-| ids | 唯一编号 | 重复入库时识别同一位置的记录 |
-| documents | 文本块原文 | 检索后交给聊天模型阅读 |
-| embeddings | 文本向量 | 比较问题和资料是否相似 |
-| metadatas | 来源文件名 | 回答时能追溯出处 |
+| 开发语言 | Python | 文档处理与问答流程 |
+| 嵌入模型 | Sentence Transformers / BGE-small-zh-v1.5 | 在本地将文档和问题转为向量 |
+| 向量数据库 | Chroma | 持久化索引与相似度检索 |
+| 聊天接口 | OpenAI Python SDK | 调用兼容服务生成回答 |
+| 环境配置 | python-dotenv | 加载本地模型服务配置 |
+| 自动化测试 | unittest | 验证检索、索引更新和模型调用逻辑 |
 
-`get_collection()` 打开数据库，`index_docs()` 写入当前全部文档的块。
-三个输入列表按位置对应：第一个向量来自第一个文本块，它的出处是第一个来源。
+## 工作流程
 
-数据保存在 `bigc-agent/storage/chroma/`，关闭程序也不会丢失。
-每次重新入库都会更新内容并清理多余旧块；空文档集合会报错并保留原索引。
-这里按整套文档更新，不支持只传一篇文档做增量导入。更新时先停止问答程序。
-
-### 5. build_index.py：串起准备阶段
-
-文件位置：[build_index.py](bigc-agent/src/build_index.py)。
-
-这个文件依次调用刚才的四个模块：
-
-```text
-load_docs → split_text → model.encode → index_docs
+```mermaid
+flowchart LR
+    subgraph Index[文档入库]
+        A[TXT 文档] --> B[清理与切块]
+        B --> C[本地嵌入模型]
+        C --> D[(Chroma 索引)]
+    end
+    subgraph QA[检索问答]
+        E[用户问题] --> F[同一嵌入模型]
+        F --> G[相似度检索与过滤]
+        G --> H{是否命中资料}
+        H -->|是| I[参考资料与问题组成提示词]
+        I --> J[聊天模型]
+        J --> K[回答与参考来源]
+        H -->|否| L[返回无相关信息]
+    end
+    D --> G
 ```
 
-重点看 `chunks`、`sources`、`embeddings` 三个列表如何一一对应。
-主入口只加载一次嵌入模型，再把所有文本块交给它处理。
+嵌入模型在本地运行，聊天模型由配置的服务提供。建立索引不会训练或微调模型。
 
-### 6. retriever.py：找出相关段落
+## 快速开始
 
-文件位置：[retriever.py](bigc-agent/src/retriever.py)。
+### 1. 准备环境
 
-输入：数据库集合、问题、嵌入模型。
-输出：包含原文、来源和相似度的字典列表。
+需要 Git、Python 3.10 或更新版本，以及可用的兼容 OpenAI Chat Completions 接口的服务。项目已在 Python 3.12.8 环境下通过自动化测试，建议使用 Python 3.12。
 
-```python
-[
-    {"text": "命中的资料原文", "source": "特色专业.txt", "score": 0.82},
-]
+```bash
+git clone https://github.com/luochen036/bigc_agent.git
+cd bigc_agent
+python -m venv venv
 ```
 
-默认最多取 3 个块，过滤掉相似度低于 0.3 的结果。
-Chroma 被配置为余弦距离，代码通过 `score = 1 - distance` 得到余弦相似度。
-分数越大通常越相关，但不是“答案正确率”，0.3 也不是经过评测的通用阈值。
+激活虚拟环境：
 
-在 `src` 运行 `python test.py`，可以只观察检索原文，不调用聊天模型。
-检索效果不好时先检查这一步，再检查原文，不要只盯着最终回答。
+| 终端 | 命令 |
+| --- | --- |
+| Windows PowerShell | `.\venv\Scripts\Activate.ps1` |
+| Windows CMD | `venv\Scripts\activate.bat` |
+| macOS / Linux | `source venv/bin/activate` |
 
-### 7. languagemodel.py：调用聊天服务
+下文命令均在**仓库根目录**、已激活的虚拟环境中执行：
 
-文件位置：[languagemodel.py](bigc-agent/src/languagemodel.py)。
+```bash
+python -m pip install -r requirements.txt
+```
 
-`load_dotenv()` 加载配置，`os.getenv()` 读取配置：
-`LLM_BASE_URL` 决定请求地址，`LLM_API_KEY` 用于认证，`LLM_MODEL` 指定模型。
-已有的系统环境变量优先于 `.env`，实际配置文件被 Git 忽略。
+### 2. 配置聊天服务
 
-`generate_answer()` 把两条消息发送给兼容接口：
-`system` 是系统规则，`user` 是“参考资料 + 问题”。
-接口返回对象，`response.choices[0].message.content` 才是回答文字。
+首次使用时，将 [bigc-agent/.env.example](bigc-agent/.env.example) 复制为同目录下的 `.env`。已有 `.env` 时跳过复制步骤，直接编辑配置。
 
-这一步会联网，将问题和命中的文本块发送给配置的模型服务，并可能产生接口费用。
-导入这个模块不会请求接口，只有调用函数才会请求。
-
-### 8. agent.py：串起问答阶段
-
-文件位置：[agent.py](bigc-agent/src/agent.py)。
-
-先看 `answer_question()`，它只做三件事：
-
-1. 调用 `retrieve()` 找资料。
-2. 调用 `build_prompt()` 给资料编号，再拼上问题。
-3. 调用 `generate_answer()` 得到回答。
-
-再看 `main()`：读取用户输入，打开数据库，加载嵌入模型，调用上述函数并打印结果。
-`if __name__ == "__main__"` 让这个入口只在直接运行文件时执行，
-被其他文件导入时不会突然询问用户或请求模型。
-
-模型被要求使用 `[1]` 等来源编号，但提示词不能保证它绝不出错。
-终端列出的来源是本次检索结果，阅读答案时仍应回看原文。
-
-## 五、教学版的范围
-
-现在只需记住两个正式入口：`build_index.py` 和 `agent.py`。
-`test.py` 是可选的检索练习；`tests/test_pipeline.py` 是供维护使用的自动化测试，
-初次学习可以跳过。未使用的网页依赖、缓存装饰器和空评测文件已移除。
-
-旧版的命令行问题参数、`--dry-run`、`--top-k`、`--min-score`、`--db-path`、
-`--data-dir` 和连续提问模式已经移除。直接运行 `store.py` 也不再执行入库。
-学习时需要调整检索参数，可以修改 `retriever.py` 中函数的默认值。
-
-验证核心功能的命令，在 `bigc-agent` 目录执行：
+Windows PowerShell：
 
 ```powershell
-python -m unittest discover -s tests -p "test_*.py" -v
+Copy-Item bigc-agent/.env.example bigc-agent/.env
 ```
 
-这些测试使用模拟聊天响应，不需要真实密钥，也不会调用远程聊天接口。
-测试通过代表相应代码行为符合预期，不代表知识库事实或模型回答已被全面验证。
+macOS / Linux：
+
+```bash
+cp bigc-agent/.env.example bigc-agent/.env
+```
+
+在 `bigc-agent/.env` 中填写服务商提供的配置：
+
+```dotenv
+LLM_BASE_URL=https://your-provider.example/v1
+LLM_API_KEY=your-api-key
+LLM_MODEL=your-model-id
+```
+
+| 变量 | 说明 |
+| --- | --- |
+| `LLM_BASE_URL` | 接口基础地址，包含服务商要求的路径前缀，通常为 `/v1` |
+| `LLM_API_KEY` | 服务商提供的 API 密钥 |
+| `LLM_MODEL` | 服务商支持的准确模型标识 |
+
+以上值仅为占位示例。已有系统环境变量优先于 `.env`，三个配置项均不能为空。`.env` 已被 Git 忽略。
+
+### 3. 建立文档索引
+
+```bash
+python bigc-agent/src/build_index.py
+```
+
+默认读取 [bigc-agent/data/docs](bigc-agent/data/docs) 中的文本，并将索引保存至 `bigc-agent/storage/chroma/`。
+
+嵌入模型优先从 `bigc-agent/models/BAAI--bge-small-zh-v1.5/snapshots/master/` 加载；该目录不存在时，Sentence Transformers 会尝试加载或下载 `BAAI/bge-small-zh-v1.5`。首次使用且无缓存时需要联网下载，模型权重与生成的索引均不包含在仓库中。此步骤不调用聊天接口。
+
+### 4. 开始问答
+
+```bash
+python bigc-agent/src/agent.py
+```
+
+在“请输入问题：”提示后输入问题，例如：
+
+```text
+北京印刷学院有哪些特色专业？
+```
+
+程序输出回答、本次检索的来源文件及相似度，完成一次问答后退出。再次运行即可提出新问题，无需每次重建索引。
+
+## 知识库与检索参数
+
+将 UTF-8 编码的 `.txt` 文件放入 `bigc-agent/data/docs/`，程序只读取该目录的直接子文件。新增、修改或删除资料后，停止正在运行的问答程序，再执行 `build_index.py` 更新整套索引。当前不支持单文档增量导入。
+
+| 参数 | 默认值 | 配置位置 |
+| --- | --- | --- |
+| 文本块目标长度 | 300 字符 | [splitter.py](bigc-agent/src/splitter.py) 的 `chunk_size` |
+| 相邻块重叠长度 | 50 字符 | [splitter.py](bigc-agent/src/splitter.py) 的 `overlap` |
+| 最大检索数量 | 3 | [retriever.py](bigc-agent/src/retriever.py) 的 `k` |
+| 最低相似度 | 0.3 | [retriever.py](bigc-agent/src/retriever.py) 的 `min_score` |
+
+切块按完整句子合并，长句可能超过目标长度。相似度使用 `1 - 余弦距离` 计算，分数不代表答案正确率；阈值需要根据实际知识库调整。修改切块参数后，应重新运行入库脚本；更换嵌入模型时，需使用与新模型匹配的全新索引。
+
+## 项目结构
+
+```text
+bigc_agent/
+├── README.md
+├── requirements.txt          # 项目依赖
+├── check_env.py              # 核心依赖检查
+└── bigc-agent/
+    ├── .env.example          # 聊天服务配置模板
+    ├── requirements.txt      # 引用根目录依赖
+    ├── data/docs/            # 知识库文本
+    ├── src/
+    │   ├── data_loader.py    # 文档加载与清理
+    │   ├── splitter.py       # 文本切块
+    │   ├── embedder.py       # 嵌入模型加载
+    │   ├── store.py          # 向量持久化与索引更新
+    │   ├── build_index.py    # 文档入库入口
+    │   ├── retriever.py      # 检索与相似度过滤
+    │   ├── languagemodel.py  # 聊天服务调用
+    │   ├── agent.py          # 命令行问答入口
+    │   └── test.py           # 手动查看检索结果
+    └── tests/
+        └── test_pipeline.py  # 自动化测试
+```
+
+## 检查与测试
+
+检查核心依赖是否可导入：
+
+```bash
+python check_env.py
+```
+
+运行自动化测试：
+
+```bash
+python -m unittest discover -s bigc-agent/tests -p "test_*.py" -v
+```
+
+测试覆盖文档路径解析、切块边界、检索过滤、无命中处理、配置加载、模拟聊天响应和旧索引清理。测试不需要真实密钥，不下载嵌入模型，也不调用远程聊天接口。
+
+已建立索引后，可以单独查看检索结果：
+
+```bash
+python bigc-agent/src/test.py
+```
+
+该脚本加载本地嵌入模型并打印来源、相似度和原文，不调用聊天接口；可在脚本中修改示例问题。
+
+## 使用范围
+
+当前版本用于学习和原型验证，提供单次命令行问答，尚未提供 Web 界面、多轮对话记忆或工具调用。
+
+回答质量取决于资料内容、检索结果和聊天模型。来源编号由模型按提示生成，终端展示的是本次检索资料，应结合原文核对回答；招生政策等时效性信息请以学校最新官方发布为准。
+
+调用聊天服务时，问题和命中的文本块会发送至配置的服务商，并可能产生接口费用。
